@@ -144,6 +144,7 @@ static int register_ring = 1;	/* register ring */
 static int use_sync = 0;	/* use preadv2 */
 static int numa_placement = 0;	/* set to node of device */
 static int pt = 0;		/* passthrough I/O or not */
+static int register_queues = 0; /* use io_uring registered queues*/
 
 static unsigned long tsc_rate;
 
@@ -447,6 +448,19 @@ static int io_uring_register_files(struct submitter *s)
 			IORING_REGISTER_FILES, s->fds, s->nr_files);
 }
 
+static int io_uring_register_queues(struct submitter *s)
+{
+	if (s->nr_files == 1) {
+		int fd;
+
+		fd = s->files[0].real_fd;
+		return syscall(__NR_io_uring_register, s->ring_fd, IORING_REGISTER_QUEUE, &fd, s->nr_files);
+	} else {
+		printf("don't want to test direct-queue for more than one device\n");
+		return -EINVAL;
+	}
+}
+
 static int io_uring_setup(unsigned entries, struct io_uring_params *p)
 {
 	int ret;
@@ -628,6 +642,9 @@ static void init_io_pt(struct submitter *s, unsigned index)
 	}
 	sqe->opcode = IORING_OP_URING_CMD;
 	sqe->user_data = (unsigned long) f->fileno;
+	sqe->uring_cmd_flags = 0;
+	if (register_queues)
+		sqe->uring_cmd_flags =  IORING_URING_CMD_DIRECT;
 	if (stats)
 		sqe->user_data |= ((__u64) s->clock_index << 32ULL);
 	sqe->cmd_op = NVME_URING_CMD_IO;
@@ -642,7 +659,7 @@ static void init_io_pt(struct submitter *s, unsigned index)
 	cmd->addr = (unsigned long) s->iovecs[index].iov_base;
 	cmd->data_len = bs;
 	if (fixedbufs) {
-		sqe->uring_cmd_flags = IORING_URING_CMD_FIXED;
+		sqe->uring_cmd_flags |= IORING_URING_CMD_FIXED;
 		sqe->buf_index = index;
 	}
 	cmd->nsid = f->nsid;
@@ -967,6 +984,13 @@ static int setup_ring(struct submitter *s)
 			return 1;
 		}
 	}
+	if (register_queues) {
+		ret = io_uring_register_queues(s);
+		if (ret < 0) {
+			perror("io_uring_register_queues");
+			return 1;
+		}
+	}
 
 	ptr = mmap(0, p.sq_off.array + p.sq_entries * sizeof(__u32),
 			PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, fd,
@@ -1070,7 +1094,7 @@ static int submitter_init(struct submitter *s)
 	}
 
 	if (!init_printed) {
-		printf("polled=%d, fixedbufs=%d/%d, register_files=%d, buffered=%d, QD=%d\n", polled, fixedbufs, dma_map, register_files, buffered, depth);
+		printf("polled=%d, fixedbufs=%d/%d, register_files=%d, buffered=%d, register_queues=%d QD=%d\n", polled, fixedbufs, dma_map, register_files, buffered, register_queues, depth);
 		printf("%s", buf);
 		init_printed = 1;
 	}
@@ -1515,11 +1539,12 @@ static void usage(char *argv, int status)
 		" -S <bool> : Use sync IO (preadv2), default %d\n"
 		" -X <bool> : Use registered ring %d\n"
 		" -P <bool> : Automatically place on device home node %d\n"
-		" -u <bool> : Use nvme-passthrough I/O, default %d\n",
+		" -u <bool> : Use nvme-passthrough I/O, default %d\n"
+		"-k <bool> : Use io_uring managed queues, default %d\n",
 		argv, DEPTH, BATCH_SUBMIT, BATCH_COMPLETE, BS, polled,
 		fixedbufs, dma_map, register_files, nthreads, !buffered, do_nop,
 		stats, runtime == 0 ? "unlimited" : runtime_str, random_io, aio,
-		use_sync, register_ring, numa_placement, pt);
+		use_sync, register_ring, numa_placement, pt, register_queues);
 	exit(status);
 }
 
@@ -1578,7 +1603,7 @@ int main(int argc, char *argv[])
 	if (!do_nop && argc < 2)
 		usage(argv[0], 1);
 
-	while ((opt = getopt(argc, argv, "d:s:c:b:p:B:F:n:N:O:t:T:a:r:D:R:X:S:P:u:h?")) != -1) {
+	while ((opt = getopt(argc, argv, "d:s:c:b:p:B:F:n:N:O:t:T:a:r:D:R:X:S:P:u:k:h?")) != -1) {
 		switch (opt) {
 		case 'a':
 			aio = !!atoi(optarg);
@@ -1661,6 +1686,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'u':
 			pt = !!atoi(optarg);
+			break;
+		case 'k':
+			register_queues = !!atoi(optarg);
 			break;
 		case 'h':
 		case '?':
