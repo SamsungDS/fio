@@ -86,6 +86,7 @@ struct ioring_options {
 	struct cmdprio_options cmdprio_options;
 	unsigned int fixedbufs;
 	unsigned int registerfiles;
+	unsigned int registerqueues;
 	unsigned int sqpoll_thread;
 	unsigned int sqpoll_set;
 	unsigned int sqpoll_cpu;
@@ -221,6 +222,15 @@ static struct fio_option options[] = {
 		.type	= FIO_OPT_STR_SET,
 		.off1	= offsetof(struct ioring_options, registerfiles),
 		.help	= "Pre-open/register files",
+		.category = FIO_OPT_C_ENGINE,
+		.group	= FIO_OPT_G_IOURING,
+	},
+	{
+		.name	= "registerqueues",
+		.lname	= "Register raw queue",
+		.type	= FIO_OPT_STR_SET,
+		.off1	= offsetof(struct ioring_options, registerqueues),
+		.help	= "Register io_uring managed NVMe queues",
 		.category = FIO_OPT_C_ENGINE,
 		.group	= FIO_OPT_G_IOURING,
 	},
@@ -440,6 +450,9 @@ static int fio_ioring_cmd_prep(struct thread_data *td, struct io_u *io_u)
 	if (o->fixedbufs) {
 		sqe->uring_cmd_flags = IORING_URING_CMD_FIXED;
 		sqe->buf_index = io_u->index;
+	}
+	if  (o->registerqueues) {
+		sqe->uring_cmd_flags |=  IORING_URING_CMD_DIRECT;
 	}
 
 	cmd = (struct nvme_uring_cmd *)sqe->cmd;
@@ -1023,6 +1036,20 @@ err:
 	return ret;
 }
 
+static int fio_ioring_register_queues(struct thread_data *td)
+{
+	struct ioring_data *ld = td->io_ops_data;
+	int fd;
+
+	if (td->o.nr_files > 1) {
+		printf("%s: don't support multiple files with registered-queues right now!\n", __func__);
+		return 1;
+	}
+
+	fd = ld->fds[0];
+	return syscall(__NR_io_uring_register, ld->ring_fd, IORING_REGISTER_QUEUE, &fd, td->o.nr_files);
+}
+
 static int fio_ioring_post_init(struct thread_data *td)
 {
 	struct ioring_data *ld = td->io_ops_data;
@@ -1061,6 +1088,10 @@ static int fio_ioring_post_init(struct thread_data *td)
 			td_verror(td, errno, "ioring_register_files");
 			return 1;
 		}
+	}
+	if (o->registerqueues) {
+		printf("%s: don't support queue-registration with block-io\n", __func__);
+		return 1;
 	}
 
 	return 0;
@@ -1105,6 +1136,17 @@ static int fio_ioring_cmd_post_init(struct thread_data *td)
 		err = fio_ioring_register_files(td);
 		if (err) {
 			td_verror(td, errno, "ioring_register_files");
+			return 1;
+		}
+	}
+	if (o->registerqueues) {
+		if (!o->registerfiles) {
+			td_verror(td, EOPNOTSUPP, "register_queues needs register_files");
+			return 1;
+		}
+		err = fio_ioring_register_queues(td);
+		if (err) {
+			td_verror(td, errno, "ioring_register_queues");
 			return 1;
 		}
 	}
