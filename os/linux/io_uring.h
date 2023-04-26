@@ -204,6 +204,7 @@ enum {
  *				along with setting sqe->buf_index.
  */
 #define IORING_URING_CMD_FIXED	(1U << 0)
+#define IORING_URING_CMD_DIRECT	(1U << 1)
 
 /*
  * sqe->fsync_flags
@@ -392,6 +393,10 @@ enum {
 	/* register/unregister io_uring fd with the ring */
 	IORING_REGISTER_RING_FDS		= 20,
 	IORING_UNREGISTER_RING_FDS		= 21,
+
+	/* register a device-queue with the ring */
+	IORING_REGISTER_QUEUE			= 26,
+	IORING_UNREGISTER_QUEUE			= 27,
 
 	/* this goes last */
 	IORING_REGISTER_LAST
