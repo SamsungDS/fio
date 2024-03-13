@@ -334,12 +334,30 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 				sqe->len = 1;
 			}
 		}
+		if (o->md_per_io_size) {
+			struct io_uring_meta_pi *meta_desc = (struct io_uring_meta_pi *) sqe->big_sqe;
+
+			sqe->meta_type = META_TYPE_PI;
+			meta_desc->addr = (__u64)(uintptr_t)io_u->mmap_data;
+			meta_desc->len = o->md_per_io_size;
+			meta_desc->app_tag = o->apptag;
+			meta_desc->pi_flags = 0;
+			if (strstr(o->pi_chk, "GUARD") != NULL)
+				meta_desc->pi_flags |= IO_INTEGRITY_CHK_GUARD;
+			if (strstr(o->pi_chk, "REFTAG") != NULL) {
+				__u64 slba = fio_nvme_get_slba(io_u);
+
+				meta_desc->pi_flags |= IO_INTEGRITY_CHK_REFTAG;
+				meta_desc->seed = (__u32)slba;
+			}
+			if (strstr(o->pi_chk, "APPTAG") != NULL)
+				meta_desc->pi_flags |= IO_INTEGRITY_CHK_APPTAG;
+		}
 		sqe->rw_flags = 0;
 		if (!td->o.odirect && o->uncached)
 			sqe->rw_flags |= RWF_UNCACHED;
 		if (o->nowait)
 			sqe->rw_flags |= RWF_NOWAIT;
-
 		/*
 		 * Since io_uring can have a submission context (sqthread_poll)
 		 * that is different from the process context, we cannot rely on
@@ -431,6 +449,7 @@ static int fio_ioring_cmd_prep(struct thread_data *td, struct io_u *io_u)
 static struct io_u *fio_ioring_event(struct thread_data *td, int event)
 {
 	struct ioring_data *ld = td->io_ops_data;
+	struct ioring_options *o = td->eo;
 	struct io_uring_cqe *cqe;
 	struct io_u *io_u;
 	unsigned index;
@@ -445,8 +464,21 @@ static struct io_u *fio_ioring_event(struct thread_data *td, int event)
 			io_u->error = -cqe->res;
 		else
 			io_u->resid = io_u->xfer_buflen - cqe->res;
+		return io_u;
 	} else
 		io_u->error = 0;
+
+	if (o->md_per_io_size) {
+		struct nvme_data *data;
+		int ret;
+
+		data = FILE_ENG_DATA(io_u->file);
+		if (data->pi_type && (io_u->ddir == DDIR_READ) && !o->pi_act) {
+			ret = fio_nvme_pi_verify(data, io_u);
+			if (ret)
+				io_u->error = ret;
+		}
+	}
 
 	return io_u;
 }
@@ -617,6 +649,22 @@ static enum fio_q_status fio_ioring_queue(struct thread_data *td,
 	if (!strcmp(td->io_ops->name, "io_uring_cmd") &&
 		o->cmd_type == FIO_URING_CMD_NVME)
 		fio_ioring_cmd_nvme_pi(td, io_u);
+
+	if (!strcmp(td->io_ops->name, "io_uring") && o->md_per_io_size) {
+		struct nvme_data *data = FILE_ENG_DATA(io_u->file);
+		struct nvme_cmd_ext_io_opts ext_opts = {0};
+
+		if (data->pi_type) {
+			if (o->pi_act)
+				ext_opts.io_flags |= NVME_IO_PRINFO_PRACT;
+
+			ext_opts.io_flags |= o->prchk;
+			ext_opts.apptag = o->apptag;
+			ext_opts.apptag_mask = o->apptag_mask;
+		}
+		fio_nvme_generate_guard(io_u, &ext_opts);
+	}
+
 
 	ring->array[tail & ld->sq_ring_mask] = io_u->index;
 	atomic_store_release(ring->tail, next_tail);
@@ -850,6 +898,8 @@ static int fio_ioring_queue_init(struct thread_data *td)
 		 */
 		td->o.disable_slat = 1;
 	}
+	if (o->md_per_io_size)
+		p.flags |= IORING_SETUP_SQE128;
 
 	/*
 	 * Clamp CQ ring size at our SQ ring size, we don't need more entries
@@ -1159,8 +1209,9 @@ static int fio_ioring_init(struct thread_data *td)
 	 * metadata buffer for nvme command.
 	 * We are only supporting iomem=malloc / mem=malloc as of now.
 	 */
-	if (!strcmp(td->io_ops->name, "io_uring_cmd") &&
-	    (o->cmd_type == FIO_URING_CMD_NVME) && o->md_per_io_size) {
+	if ((!strcmp(td->io_ops->name, "io_uring_cmd") &&
+	    (o->cmd_type == FIO_URING_CMD_NVME) && o->md_per_io_size) ||
+	    (!strcmp(td->io_ops->name, "io_uring") && o->md_per_io_size)) {
 		md_size = (unsigned long long) o->md_per_io_size
 				* (unsigned long long) td->o.iodepth;
 		md_size += page_mask + td->o.mem_align;
@@ -1212,7 +1263,8 @@ static int fio_ioring_io_u_init(struct thread_data *td, struct io_u *io_u)
 
 	ld->io_u_index[io_u->index] = io_u;
 
-	if (!strcmp(td->io_ops->name, "io_uring_cmd")) {
+	if (!strcmp(td->io_ops->name, "io_uring_cmd") ||
+	    !strcmp(td->io_ops->name, "io_uring")) {
 		p = PTR_ALIGN(ld->md_buf, page_mask) + td->o.mem_align;
 		p += o->md_per_io_size * io_u->index;
 		io_u->mmap_data = p;
@@ -1246,6 +1298,24 @@ static int fio_ioring_open_file(struct thread_data *td, struct fio_file *f)
 {
 	struct ioring_data *ld = td->io_ops_data;
 	struct ioring_options *o = td->eo;
+
+	if (o->md_per_io_size) {
+		struct nvme_data *data = NULL;
+		__u64 nlba = 0;
+		int ret;
+
+		data = FILE_ENG_DATA(f);
+		if (data == NULL) {
+			data = calloc(1, sizeof(struct nvme_data));
+			ret = fio_nvme_get_info(f, &nlba, o->pi_act, data);
+			if (ret) {
+				free(data);
+				return ret;
+			}
+
+			FILE_SET_ENG_DATA(f, data);
+		}
+	}
 
 	if (!ld || !o->registerfiles)
 		return generic_open_file(td, f);
