@@ -414,6 +414,8 @@ struct nvme_cmd_ext_io_opts {
 	__u16 apptag_mask;
 };
 
+__u64 fio_nvme_get_slba(struct io_u *io_u);
+
 int fio_nvme_iomgmt_ruhs(struct thread_data *td, struct fio_file *f,
 			 struct nvme_fdp_ruh_status *ruhs, __u32 bytes);
 
@@ -425,6 +427,8 @@ int fio_nvme_uring_cmd_prep(struct nvme_uring_cmd *cmd, struct io_u *io_u,
 
 void fio_nvme_pi_fill(struct nvme_uring_cmd *cmd, struct io_u *io_u,
 		      struct nvme_cmd_ext_io_opts *opts);
+
+void fio_nvme_generate_guard(struct io_u *io_u, struct nvme_cmd_ext_io_opts *opts);
 
 int fio_nvme_pi_verify(struct nvme_data *data, struct io_u *io_u);
 

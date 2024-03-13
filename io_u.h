@@ -139,6 +139,7 @@ struct io_u {
 #endif
 		void *mmap_data;
 	};
+	void *pi_attr;
 };
 
 /*
