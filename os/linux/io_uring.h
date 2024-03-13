@@ -76,6 +76,32 @@ struct io_uring_sqe {
 };
 
 enum {
+	META_TYPE_INTEGRITY_BIT,
+	/* not a real meta type; just to make sure that we don't overflow */
+	META_TYPE_LAST_BIT,
+};
+
+/* meta type flags */
+#define META_TYPE_INTEGRITY	(1U << META_TYPE_INTEGRITY_BIT)
+
+struct io_uring_meta {
+	__u16	meta_type;
+	__u16	meta_flags;
+	__u32	meta_len;
+	__u64	meta_addr;
+	/* the next 64 bytes goes to SQE128 */
+	__u16	apptag;
+	__u8	pad[62];
+};
+
+/*
+ * flags for integrity meta
+ */
+#define INTEGRITY_CHK_GUARD	(1U << 0)	/* enforce guard check */
+#define INTEGRITY_CHK_APPTAG	(1U << 1)	/* enforce app tag check */
+#define INTEGRITY_CHK_REFTAG	(1U << 2)	/* enforce ref tag check */
+
+enum {
 	IOSQE_FIXED_FILE_BIT,
 	IOSQE_IO_DRAIN_BIT,
 	IOSQE_IO_LINK_BIT,
