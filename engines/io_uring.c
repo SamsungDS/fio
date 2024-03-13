@@ -116,6 +116,11 @@ static const int fixed_ddir_to_op[2] = {
 	IORING_OP_WRITE_FIXED
 };
 
+static const int meta_ddir_to_op[2] = {
+	IORING_OP_READ_META,
+	IORING_OP_WRITE_META
+};
+
 static int fio_ioring_sqpoll_cb(void *data, unsigned long long *val)
 {
 	struct ioring_options *o = data;
@@ -310,7 +315,18 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 	}
 
 	if (io_u->ddir == DDIR_READ || io_u->ddir == DDIR_WRITE) {
-		if (o->fixedbufs) {
+		if (o->md_per_io_size) {
+			struct iovec *iov = &ld->iovecs[io_u->index];
+
+			iov->iov_base = io_u->xfer_buf;
+			iov->iov_len = io_u->xfer_buflen;
+
+			sqe->opcode = meta_ddir_to_op[io_u->ddir];
+			sqe->addr = (unsigned long) iov->iov_base;
+			sqe->len = iov->iov_len;
+			sqe->meta_addr = (__u64)(uintptr_t)io_u->mmap_data;
+			sqe->meta_len = o->md_per_io_size;
+		} else if (o->fixedbufs) {
 			sqe->opcode = fixed_ddir_to_op[io_u->ddir];
 			sqe->addr = (unsigned long) io_u->xfer_buf;
 			sqe->len = io_u->xfer_buflen;
@@ -431,6 +447,7 @@ static int fio_ioring_cmd_prep(struct thread_data *td, struct io_u *io_u)
 static struct io_u *fio_ioring_event(struct thread_data *td, int event)
 {
 	struct ioring_data *ld = td->io_ops_data;
+	struct ioring_options *o = td->eo;
 	struct io_uring_cqe *cqe;
 	struct io_u *io_u;
 	unsigned index;
@@ -447,6 +464,18 @@ static struct io_u *fio_ioring_event(struct thread_data *td, int event)
 			io_u->resid = io_u->xfer_buflen - cqe->res;
 	} else
 		io_u->error = 0;
+
+	if (o->md_per_io_size) {
+		struct nvme_data *data;
+		int ret;
+
+		data = FILE_ENG_DATA(io_u->file);
+		if (data->pi_type && (io_u->ddir == DDIR_READ) && !o->pi_act) {
+			ret = fio_nvme_pi_verify(data, io_u);
+			if (ret)
+				io_u->error = ret;
+		}
+	}
 
 	return io_u;
 }
@@ -617,6 +646,22 @@ static enum fio_q_status fio_ioring_queue(struct thread_data *td,
 	if (!strcmp(td->io_ops->name, "io_uring_cmd") &&
 		o->cmd_type == FIO_URING_CMD_NVME)
 		fio_ioring_cmd_nvme_pi(td, io_u);
+
+	if (!strcmp(td->io_ops->name, "io_uring") && o->md_per_io_size) {
+		struct nvme_data *data = FILE_ENG_DATA(io_u->file);
+		struct nvme_cmd_ext_io_opts ext_opts = {0};
+
+		if (data->pi_type) {
+			if (o->pi_act)
+				ext_opts.io_flags |= NVME_IO_PRINFO_PRACT;
+
+			ext_opts.io_flags |= o->prchk;
+			ext_opts.apptag = o->apptag;
+			ext_opts.apptag_mask = o->apptag_mask;
+		}
+		fio_nvme_generate_guard(io_u, &ext_opts);
+	}
+
 
 	ring->array[tail & ld->sq_ring_mask] = io_u->index;
 	atomic_store_release(ring->tail, next_tail);
@@ -1159,8 +1204,9 @@ static int fio_ioring_init(struct thread_data *td)
 	 * metadata buffer for nvme command.
 	 * We are only supporting iomem=malloc / mem=malloc as of now.
 	 */
-	if (!strcmp(td->io_ops->name, "io_uring_cmd") &&
-	    (o->cmd_type == FIO_URING_CMD_NVME) && o->md_per_io_size) {
+	if ((!strcmp(td->io_ops->name, "io_uring_cmd") &&
+	    (o->cmd_type == FIO_URING_CMD_NVME) && o->md_per_io_size) ||
+	    (!strcmp(td->io_ops->name, "io_uring") && o->md_per_io_size)) {
 		md_size = (unsigned long long) o->md_per_io_size
 				* (unsigned long long) td->o.iodepth;
 		md_size += page_mask + td->o.mem_align;
@@ -1212,7 +1258,8 @@ static int fio_ioring_io_u_init(struct thread_data *td, struct io_u *io_u)
 
 	ld->io_u_index[io_u->index] = io_u;
 
-	if (!strcmp(td->io_ops->name, "io_uring_cmd")) {
+	if (!strcmp(td->io_ops->name, "io_uring_cmd") ||
+	    !strcmp(td->io_ops->name, "io_uring")) {
 		p = PTR_ALIGN(ld->md_buf, page_mask) + td->o.mem_align;
 		p += o->md_per_io_size * io_u->index;
 		io_u->mmap_data = p;
@@ -1246,6 +1293,24 @@ static int fio_ioring_open_file(struct thread_data *td, struct fio_file *f)
 {
 	struct ioring_data *ld = td->io_ops_data;
 	struct ioring_options *o = td->eo;
+
+	if (o->md_per_io_size) {
+		struct nvme_data *data = NULL;
+		__u64 nlba = 0;
+		int ret;
+
+		data = FILE_ENG_DATA(f);
+		if (data == NULL) {
+			data = calloc(1, sizeof(struct nvme_data));
+			ret = fio_nvme_get_info(f, &nlba, o->pi_act, data);
+			if (ret) {
+				free(data);
+				return ret;
+			}
+
+			FILE_SET_ENG_DATA(f, data);
+		}
+	}
 
 	if (!ld || !o->registerfiles)
 		return generic_open_file(td, f);
