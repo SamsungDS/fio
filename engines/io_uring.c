@@ -326,6 +326,14 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 			sqe->len = iov->iov_len;
 			sqe->meta_addr = (__u64)(uintptr_t)io_u->mmap_data;
 			sqe->meta_len = o->md_per_io_size;
+			sqe->meta_flags = 0;
+			if (strstr(o->pi_chk, "GUARD") != NULL)
+				sqe->meta_flags |= META_CHK_GUARD;
+			if (strstr(o->pi_chk, "REFTAG") != NULL)
+				sqe->meta_flags |= META_CHK_REFTAG;
+			if (strstr(o->pi_chk, "APPTAG") != NULL)
+				sqe->meta_flags |= META_CHK_APPTAG;
+			sqe->apptag = o->apptag;
 		} else if (o->fixedbufs) {
 			sqe->opcode = fixed_ddir_to_op[io_u->ddir];
 			sqe->addr = (unsigned long) io_u->xfer_buf;
@@ -355,7 +363,6 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 			sqe->rw_flags |= RWF_UNCACHED;
 		if (o->nowait)
 			sqe->rw_flags |= RWF_NOWAIT;
-
 		/*
 		 * Since io_uring can have a submission context (sqthread_poll)
 		 * that is different from the process context, we cannot rely on

@@ -70,6 +70,8 @@ struct io_uring_sqe {
 		struct {
 			__u64	meta_addr;
 			__u32	meta_len;
+			__u16	meta_flags;
+			__u16	apptag;
 		};
 		/*
 		 * If the ring is initialized with IORING_SETUP_SQE128, then
@@ -78,6 +80,13 @@ struct io_uring_sqe {
 		__u8	cmd[0];
 	};
 };
+
+/*
+ * meta io flags
+ */
+#define META_CHK_GUARD	(1U << 0)	/* guard is valid */
+#define META_CHK_APPTAG	(1U << 1)	/* app tag is valid */
+#define META_CHK_REFTAG	(1U << 2)	/* ref tag is valid */
 
 enum {
 	IOSQE_FIXED_FILE_BIT,
