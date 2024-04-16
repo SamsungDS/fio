@@ -498,7 +498,11 @@ int fio_nvme_get_info(struct fio_file *f, __u64 *nlba, __u32 pi_act,
 	}
 	*/
 
-	fd = open(f->file_name, O_RDONLY);
+	if (!strncmp(f->file_name, "/dev/dm-0", 9)) {
+		fd = open("/dev/nvme0n1", O_RDONLY);
+	} else {
+		fd = open(f->file_name, O_RDONLY);
+	}
 	if (fd < 0)
 		return -errno;
 
