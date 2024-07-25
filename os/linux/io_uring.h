@@ -90,7 +90,7 @@ struct io_uring_meta {
 	__u32	meta_len;
 	__u64	meta_addr;
 	/* the next 64 bytes goes to SQE128 */
-	__u16	apptag;
+	__u16	app_tag;
 	__u8	pad[62];
 };
 

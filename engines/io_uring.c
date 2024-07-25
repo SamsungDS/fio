@@ -340,7 +340,7 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 			meta_desc->meta_type = META_TYPE_INTEGRITY;
 			meta_desc->meta_addr = (__u64)(uintptr_t)io_u->mmap_data;
 			meta_desc->meta_len = o->md_per_io_size;
-			meta_desc->apptag = o->apptag;
+			meta_desc->app_tag = o->apptag;
 			meta_desc->meta_flags = 0;
 			if (strstr(o->pi_chk, "GUARD") != NULL)
 				meta_desc->meta_flags |= INTEGRITY_CHK_GUARD;
