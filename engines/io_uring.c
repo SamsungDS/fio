@@ -335,7 +335,7 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 			}
 		}
 		if (o->md_per_io_size) {
-			struct io_uring_meta *meta_desc = (struct io_uring_meta *) sqe->cmd;
+			struct io_uring_meta *meta_desc = (struct io_uring_meta *) sqe->big_sqe_cmd;
 
 			meta_desc->meta_type = META_TYPE_INTEGRITY;
 			meta_desc->meta_addr = (__u64)(uintptr_t)io_u->mmap_data;
@@ -348,7 +348,6 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 				meta_desc->meta_flags |= INTEGRITY_CHK_REFTAG;
 			if (strstr(o->pi_chk, "APPTAG") != NULL)
 				meta_desc->meta_flags |= INTEGRITY_CHK_APPTAG;
-
 		}
 		sqe->rw_flags = 0;
 		if (!td->o.odirect && o->uncached)
