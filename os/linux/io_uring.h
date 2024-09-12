@@ -96,8 +96,9 @@ struct io_uring_meta {
 	__u16	meta_flags;
 	__u32	meta_len;
 	__u64	meta_addr;
+	__u32	seed;
 	__u16	app_tag;
-	__u8	pad[46];
+	__u8	pad[42];
 };
 
 /*

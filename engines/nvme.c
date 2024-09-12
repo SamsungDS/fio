@@ -8,6 +8,16 @@
 #include "../crc/crc-t10dif.h"
 #include "../crc/crc64.h"
 
+__u64 fio_nvme_get_slba(struct io_u *io_u)
+{
+	struct nvme_data *data = FILE_ENG_DATA(io_u->file);
+
+	if (data->lba_ext)
+		return io_u->offset / data->lba_ext;
+	else
+		return io_u->offset >> data->lba_shift;
+}
+
 static inline __u64 get_slba(struct nvme_data *data, struct io_u *io_u)
 {
 	if (data->lba_ext)

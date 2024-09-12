@@ -344,8 +344,12 @@ static int fio_ioring_prep(struct thread_data *td, struct io_u *io_u)
 			meta_desc->meta_flags = 0;
 			if (strstr(o->pi_chk, "GUARD") != NULL)
 				meta_desc->meta_flags |= INTEGRITY_CHK_GUARD;
-			if (strstr(o->pi_chk, "REFTAG") != NULL)
+			if (strstr(o->pi_chk, "REFTAG") != NULL) {
+				__u64 slba = fio_nvme_get_slba(io_u);
+
 				meta_desc->meta_flags |= INTEGRITY_CHK_REFTAG;
+				meta_desc->seed = (__u32)slba;
+			}
 			if (strstr(o->pi_chk, "APPTAG") != NULL)
 				meta_desc->meta_flags |= INTEGRITY_CHK_APPTAG;
 		}
